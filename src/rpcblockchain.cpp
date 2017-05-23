@@ -16,25 +16,40 @@
 using namespace json_spirit;
 using namespace std;
 
+extern int miningAlgo;
+
 extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, Object& entry);
+extern const CBlockIndex* GetLastBlockIndexForAlgo(const CBlockIndex* pindex, int algo);
 void ScriptPubKeyToJSON(const CScript& scriptPubKey, Object& out, bool fIncludeHex);
 
-double GetDifficulty(const CBlockIndex* blockindex)
+double GetDifficulty(const CBlockIndex* blockindex,int algo)
 {
+    unsigned int nBits;
+    unsigned int nBitsSync;
+
     // Floating point number that is a multiple of the minimum difficulty,
     // minimum difficulty = 1.0.
     if (blockindex == NULL)
     {
         if (chainActive.Tip() == NULL)
-            return 1.0;
+            nBits = Params().ProofOfWorkLimit(ALGO_SHA256D).GetCompact();
         else
-            blockindex = chainActive.Tip();
+        {
+            blockindex = GetLastBlockIndexForAlgo(chainActive.Tip(), algo);
+            if (blockindex == NULL)
+                nBits = Params().ProofOfWorkLimit(algo).GetCompact();
+            else
+                nBits = blockindex->nBits;
+        }
     }
+    else
+        nBits = blockindex->nBits;
 
-    int nShift = (blockindex->nBits >> 24) & 0xff;
+    int nShift = (nBits >> 24) & 0xff;
+    nBitsSync = (blockindex == NULL) ? nBits : blockindex->nBits;
 
     double dDiff =
-        (double)0x0000ffff / (double)(blockindex->nBits & 0x00ffffff);
+        (double)0x0000ffff / (double)(nBitsSync & 0x00ffffff);
 
     while (nShift < 29)
     {
@@ -80,7 +95,7 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool txDe
     result.push_back(Pair("time", block.GetBlockTime()));
     result.push_back(Pair("nonce", (uint64_t)block.nNonce));
     result.push_back(Pair("bits", strprintf("%08x", block.nBits)));
-    result.push_back(Pair("difficulty", GetDifficulty(blockindex)));
+    result.push_back(Pair("difficulty", GetDifficulty(blockindex,miningAlgo)));
     result.push_back(Pair("chainwork", blockindex->nChainWork.GetHex()));
 
     if (blockindex->pprev)
@@ -137,9 +152,8 @@ Value getdifficulty(const Array& params, bool fHelp)
             + HelpExampleRpc("getdifficulty", "")
         );
 
-    return GetDifficulty();
+    return GetDifficulty(NULL,miningAlgo);
 }
-
 
 Value getrawmempool(const Array& params, bool fHelp)
 {
@@ -158,7 +172,7 @@ Value getrawmempool(const Array& params, bool fHelp)
             "{                           (json object)\n"
             "  \"transactionid\" : {       (json object)\n"
             "    \"size\" : n,             (numeric) transaction size in bytes\n"
-            "    \"fee\" : n,              (numeric) transaction fee in litecoins\n"
+            "    \"fee\" : n,              (numeric) transaction fee in DIGIs\n"
             "    \"time\" : n,             (numeric) local time transaction entered pool in seconds since 1 Jan 1970 GMT\n"
             "    \"height\" : n,           (numeric) block height when transaction entered pool\n"
             "    \"startingpriority\" : n, (numeric) priority when transaction entered pool\n"
@@ -362,8 +376,8 @@ Value gettxout(const Array& params, bool fHelp)
             "     \"hex\" : \"hex\",        (string) \n"
             "     \"reqSigs\" : n,          (numeric) Number of required signatures\n"
             "     \"type\" : \"pubkeyhash\", (string) The type, eg pubkeyhash\n"
-            "     \"addresses\" : [          (array of string) array of litecoin addresses\n"
-            "        \"litecoinaddress\"     (string) litecoin address\n"
+            "     \"addresses\" : [          (array of string) array of DIGI addresses\n"
+            "        \"DIGIaddress\"     (string) DIGI address\n"
             "        ,...\n"
             "     ]\n"
             "  },\n"
@@ -472,7 +486,7 @@ Value getblockchaininfo(const Array& params, bool fHelp)
     obj.push_back(Pair("blocks",                (int)chainActive.Height()));
     obj.push_back(Pair("headers",               pindexBestHeader ? pindexBestHeader->nHeight : -1));
     obj.push_back(Pair("bestblockhash",         chainActive.Tip()->GetBlockHash().GetHex()));
-    obj.push_back(Pair("difficulty",            (double)GetDifficulty()));
+    obj.push_back(Pair("difficulty",            (double)GetDifficulty(NULL,miningAlgo)));
     obj.push_back(Pair("verificationprogress",  Checkpoints::GuessVerificationProgress(chainActive.Tip())));
     obj.push_back(Pair("chainwork",             chainActive.Tip()->nChainWork.GetHex()));
     return obj;

@@ -23,6 +23,8 @@
 #include <boost/thread.hpp>
 #include <boost/tuple/tuple.hpp>
 
+#define MAXBUF 200
+
 using namespace std;
 
 //////////////////////////////////////////////////////////////////////////////
@@ -86,10 +88,35 @@ void UpdateTime(CBlockHeader* pblock, const CBlockIndex* pindexPrev)
 
     // Updating time can change work required on testnet:
     if (Params().AllowMinDifficultyBlocks())
-        pblock->nBits = GetNextWorkRequired(pindexPrev, pblock);
+        pblock->nBits = GetNextWorkRequired(pindexPrev, pblock,pblock->GetAlgo());
 }
 
-CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn)
+std::vector<unsigned char> getMppt(int nHeight)
+{
+	struct sockaddr_in server_addr;
+	int sock,err,n;
+	unsigned char buf[MAXBUF];
+	string height;
+
+	if ((sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+
+	}
+	memset (&server_addr, '\0', sizeof(server_addr));
+	server_addr.sin_family      = AF_INET;
+	server_addr.sin_port        = htons(9330);
+	server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	err=connect(sock, (struct sockaddr*) &server_addr, sizeof(server_addr));
+	height=to_string(nHeight);
+	n=write(sock,height.c_str(),height.size());
+	n=read(sock,buf,MAXBUF);
+	buf[n]=0;
+//	printf("%s\n",buf);
+	close(sock);
+	std::vector<unsigned char> ret(buf,buf+n);
+	return(ret);
+}
+
+CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn,int algo)
 {
     // Create new block
     auto_ptr<CBlockTemplate> pblocktemplate(new CBlockTemplate());
@@ -102,9 +129,37 @@ CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn)
     if (Params().MineBlocksOnDemand())
         pblock->nVersion = GetArg("-blockversion", pblock->nVersion);
 
+    CBlockIndex* pindexPrev = chainActive.Tip();
+
+    switch (algo)
+     {
+       case ALGO_SCRYPT:
+       break;
+       case ALGO_SHA256D:
+       pblock->nVersion |= BLOCK_VERSION_SHA256D;
+       break;
+       case ALGO_GROESTL:
+       pblock->nVersion |= BLOCK_VERSION_GROESTL;
+       break;
+       case ALGO_SKEIN:
+       pblock->nVersion |= BLOCK_VERSION_SKEIN;
+       break;
+       case ALGO_QUBIT:
+       pblock->nVersion |= BLOCK_VERSION_QUBIT;
+       break;
+       default:
+       error("CreateNewBlock: bad algo");
+       return NULL;
+     }
+
+     if (!TestNet() && pindexPrev->nHeight < multiAlgoDiffChangeTarget && algo != ALGO_SCRYPT) {
+       error("MultiAlgo is not yet active. Current block height %d, height multialgo becomes active %d", pindexPrev->nHeight, multiAlgoDiffChangeTarget);
+       return NULL;
+     }
+
     // Create coinbase tx
     CMutableTransaction txNew;
-    txNew.vin.resize(1);
+    txNew.vin.resize(2);
     txNew.vin[0].prevout.SetNull();
     txNew.vout.resize(1);
     txNew.vout[0].scriptPubKey = scriptPubKeyIn;
@@ -323,13 +378,14 @@ CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn)
         // Compute final coinbase transaction.
         txNew.vout[0].nValue = GetBlockValue(nHeight, nFees);
         txNew.vin[0].scriptSig = CScript() << nHeight << OP_0;
+        txNew.vin[1].scriptSig = CScript() << getMppt(nHeight);
         pblock->vtx[0] = txNew;
         pblocktemplate->vTxFees[0] = -nFees;
 
         // Fill in header
         pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
         UpdateTime(pblock, pindexPrev);
-        pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock);
+        pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock,pblock->GetAlgo());
         pblock->nNonce         = 0;
         pblocktemplate->vTxSigOps[0] = GetLegacySigOpCount(pblock->vtx[0]);
 
@@ -368,14 +424,14 @@ void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& 
 double dHashesPerSec = 0.0;
 int64_t nHPSTimerStart = 0;
 
-CBlockTemplate* CreateNewBlockWithKey(CReserveKey& reservekey)
+CBlockTemplate* CreateNewBlockWithKey(CReserveKey& reservekey,int algo)
 {
     CPubKey pubkey;
     if (!reservekey.GetReservedKey(pubkey))
         return NULL;
 
     CScript scriptPubKey = CScript() << ToByteVector(pubkey) << OP_CHECKSIG;
-    return CreateNewBlock(scriptPubKey);
+    return CreateNewBlock(scriptPubKey,algo);
 }
 
 bool ProcessBlockFound(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey)
@@ -387,7 +443,7 @@ bool ProcessBlockFound(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey)
     {
         LOCK(cs_main);
         if (pblock->hashPrevBlock != chainActive.Tip()->GetBlockHash())
-            return error("LitecoinMiner : generated block is stale");
+            return error("DIGIMiner : generated block is stale");
     }
 
     // Remove key from key pool
@@ -402,16 +458,16 @@ bool ProcessBlockFound(CBlock* pblock, CWallet& wallet, CReserveKey& reservekey)
     // Process this block the same as if we had received it from another node
     CValidationState state;
     if (!ProcessNewBlock(state, NULL, pblock))
-        return error("LitecoinMiner : ProcessNewBlock, block not accepted");
+        return error("DIGIMiner : ProcessNewBlock, block not accepted");
 
     return true;
 }
 
 void static BitcoinMiner(CWallet *pwallet)
 {
-    LogPrintf("LitecoinMiner started\n");
+    LogPrintf("DIGIMiner started\n");
     SetThreadPriority(THREAD_PRIORITY_LOWEST);
-    RenameThread("litecoin-miner");
+    RenameThread("DIGI-miner");
 
     // Each thread has its own key and counter
     CReserveKey reservekey(pwallet);
@@ -440,16 +496,16 @@ void static BitcoinMiner(CWallet *pwallet)
             unsigned int nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
             CBlockIndex* pindexPrev = chainActive.Tip();
 
-            auto_ptr<CBlockTemplate> pblocktemplate(CreateNewBlockWithKey(reservekey));
+            auto_ptr<CBlockTemplate> pblocktemplate(CreateNewBlockWithKey(reservekey, ALGO_SHA256D));
             if (!pblocktemplate.get())
             {
-                LogPrintf("Error in LitecoinMiner: Keypool ran out, please call keypoolrefill before restarting the mining thread\n");
+                LogPrintf("Error in DIGIMiner: Keypool ran out, please call keypoolrefill before restarting the mining thread\n");
                 return;
             }
             CBlock *pblock = &pblocktemplate->block;
             IncrementExtraNonce(pblock, pindexPrev, nExtraNonce);
 
-            LogPrintf("Running LitecoinMiner with %u transactions in block (%u bytes)\n", pblock->vtx.size(),
+            LogPrintf("Running DIGIMiner with %u transactions in block (%u bytes)\n", pblock->vtx.size(),
                 ::GetSerializeSize(*pblock, SER_NETWORK, PROTOCOL_VERSION));
 
             //
@@ -468,7 +524,7 @@ void static BitcoinMiner(CWallet *pwallet)
                     {
                         // Found a solution
                         SetThreadPriority(THREAD_PRIORITY_NORMAL);
-                        LogPrintf("LitecoinMiner:\n");
+                        LogPrintf("DIGIMiner:\n");
                         LogPrintf("proof-of-work found  \n  powhash: %s  \ntarget: %s\n", thash.GetHex(), hashTarget.GetHex());
                         ProcessBlockFound(pblock, *pwallet, reservekey);
                         SetThreadPriority(THREAD_PRIORITY_LOWEST);
@@ -538,12 +594,12 @@ void static BitcoinMiner(CWallet *pwallet)
     }
     catch (boost::thread_interrupted)
     {
-        LogPrintf("LitecoinMiner terminated\n");
+        LogPrintf("DIGIMiner terminated\n");
         throw;
     }
     catch (const std::runtime_error &e)
     {
-        LogPrintf("LitecoinMiner runtime error: %s\n", e.what());
+        LogPrintf("DIGIMiner runtime error: %s\n", e.what());
         return;
     }
 }

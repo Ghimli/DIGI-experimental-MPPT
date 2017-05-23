@@ -6,6 +6,9 @@
 
 #include "crypto/hmac_sha512.h"
 #include "crypto/rfc6979_hmac_sha256.h"
+#include <openssl/ecdsa.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
 #include "eccryptoverify.h"
 #include "pubkey.h"
 #include "random.h"
@@ -219,3 +222,4 @@ bool ECC_InitSanityCheck() {
     CPubKey pubkey = key.GetPubKey();
     return key.VerifyPubKey(pubkey);
 }
+
